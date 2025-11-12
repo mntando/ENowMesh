@@ -54,7 +54,7 @@ class ENowMesh {
         };
 
         PeerInfo *getPeerTable();            // gives access to global peers[]
-        uint8_t* getMasterMac();             // access master MAC
+        uint8_t* getNodeMac();             // access node MAC
         String macToStr(const uint8_t *mac); // helper
 
         // Peer and routing functions (unchanged)
@@ -70,14 +70,32 @@ class ENowMesh {
         // === STATIC CALLBACK ENTRYPOINTS ===
         static void OnDataSent(const esp_now_send_info_t *info, esp_now_send_status_t status);
         static void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len);
+
+        // ACK detection
+        static constexpr const char* ACK_MESSAGE = "ACK";
         
     private:
         // internal global replacements
         static PeerInfo peersStatic[PEER_TABLE_SIZE];
-        static uint8_t masterMacStatic[6];
+        static uint8_t myMacStatic[6];
         static ENowMesh *instance;  // allow callbacks to access class
         NodeRole role = ROLE_MASTER;  // default to MASTER if not set
 
+        // Duplicate detection structures
+        struct SeenPacket {
+            uint8_t src_mac[6];
+            uint16_t seq;
+            uint32_t timestamp;
+            bool valid;
+        };
+        
+        static SeenPacket seenPacketsStatic[64];  // circular buffer for seen packets
+        static uint16_t seenPacketsIndex;          // current write position
+        
+        bool isDuplicate(const uint8_t *src_mac, uint16_t seq);     // check for duplicate packets helper funtion
+
+        // ACK detection
+        bool isAckPacket(const uint8_t *payload, uint8_t payload_len);
 };
 
 extern ENowMesh mesh;  // global instance
