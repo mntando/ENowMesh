@@ -92,6 +92,7 @@ class ENowMesh {
         
         static SeenPacket seenPacketsStatic[64];  // circular buffer for seen packets
         static uint16_t seenPacketsIndex;          // current write position
+        static portMUX_TYPE seenPacketsMux;  // Spinlock for interrupt safety
         
         bool isDuplicate(const uint8_t *src_mac, uint16_t seq);     // check for duplicate packets helper funtion
 

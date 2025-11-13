@@ -7,6 +7,8 @@ ENowMesh* ENowMesh::instance = nullptr;
 
 ENowMesh::SeenPacket ENowMesh::seenPacketsStatic[64] = {};
 uint16_t ENowMesh::seenPacketsIndex = 0;
+portMUX_TYPE ENowMesh::seenPacketsMux = portMUX_INITIALIZER_UNLOCKED;
+
 uint16_t ENowMesh::sequenceCounter = 0;
 
 // ----- Constructor -----
@@ -394,14 +396,19 @@ bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
         }
     }
     
-    // Not a duplicate - record it in circular buffer
-    seenPacketsStatic[seenPacketsIndex].valid = true;
-    memcpy(seenPacketsStatic[seenPacketsIndex].src_mac, src_mac, 6);
-    seenPacketsStatic[seenPacketsIndex].seq = seq;
-    seenPacketsStatic[seenPacketsIndex].timestamp = now;
+    // Not a duplicate - record it with critical section protection
+    portENTER_CRITICAL(&seenPacketsMux);
     
-    // Move to next position (circular)
+    uint16_t writeIndex = seenPacketsIndex;
     seenPacketsIndex = (seenPacketsIndex + 1) % 64;
+    
+    portEXIT_CRITICAL(&seenPacketsMux);
+    
+    // Write to reserved slot (outside critical section for speed)
+    seenPacketsStatic[writeIndex].valid = true;
+    memcpy(seenPacketsStatic[writeIndex].src_mac, src_mac, 6);
+    seenPacketsStatic[writeIndex].seq = seq;
+    seenPacketsStatic[writeIndex].timestamp = now;
     
     return false;
 }
