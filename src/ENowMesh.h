@@ -80,6 +80,7 @@ class ENowMesh {
         static uint8_t myMacStatic[6];
         static ENowMesh *instance;  // allow callbacks to access class
         NodeRole role = ROLE_MASTER;  // default to MASTER if not set
+        static uint16_t sequenceCounter;  // Per-node sequence number
 
         // Duplicate detection structures
         struct SeenPacket {

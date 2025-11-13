@@ -7,10 +7,12 @@ ENowMesh* ENowMesh::instance = nullptr;
 
 ENowMesh::SeenPacket ENowMesh::seenPacketsStatic[64] = {};
 uint16_t ENowMesh::seenPacketsIndex = 0;
+uint16_t ENowMesh::sequenceCounter = 0;
 
 // ----- Constructor -----
 ENowMesh::ENowMesh() {
     instance = this;
+    randomSeed(micros());  // Seed once per boot using microseconds
 }
 
 // ----- Role Management -----
@@ -97,20 +99,21 @@ void ENowMesh::touchPeer(const uint8_t *mac) {
 
     for (size_t i = 0; i < ENowMesh::PEER_TABLE_SIZE; ++i) {
         if (!peersStatic[i].valid) {
-            memcpy(peersStatic[i].mac, mac, 6);
-            peersStatic[i].lastSeen = millis();
-            peersStatic[i].valid = true;
-
-            Serial.printf("Added peer %s at slot %u\n", macToStr(mac).c_str(), (unsigned)i);
-
             esp_now_peer_info_t info = {};
             memcpy(info.peer_addr, mac, 6);
             info.channel = channel;
             info.ifidx = WIFI_IF_STA;
             info.encrypt = 0;
 
-            if (esp_now_add_peer(&info) != ESP_OK)
-                Serial.println("Warning: failed to add peer to ESP-NOW (may already exist).");
+            esp_err_t result = esp_now_add_peer(&info);
+            if (result == ESP_OK || result == ESP_ERR_ESPNOW_EXIST) {
+                memcpy(peersStatic[i].mac, mac, 6);
+                peersStatic[i].lastSeen = millis();
+                peersStatic[i].valid = true;
+                Serial.printf("Added peer %s at slot %u\n", macToStr(mac).c_str(), (unsigned)i);
+            } else {
+                Serial.printf("Failed to add peer %s to ESP-NOW: %d\n", macToStr(mac).c_str(), result);
+            }
             return;
         }
     }
@@ -180,7 +183,7 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
     else
         memset(hdr.dest_mac, 0xFF, 6); // broadcast
 
-    hdr.seq = random(0xFFFF);
+    hdr.seq = sequenceCounter++;
     hdr.hop_count = 0;
     hdr.payload_len = static_cast<uint8_t>(mlen);
 
@@ -271,9 +274,7 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
 
     // === PACKET FOR THIS NODE ===
     if (memcmp(hdr.dest_mac, myMacStatic, 6) == 0) {
-        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", 
-                      m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), 
-                      m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
+        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
 
         if (hdr.payload_len > 0) {
             const uint8_t *pl = incomingData + sizeof(packet_hdr_t);
