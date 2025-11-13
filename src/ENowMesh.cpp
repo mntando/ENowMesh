@@ -5,16 +5,16 @@ ENowMesh::PeerInfo ENowMesh::peersStatic[ENowMesh::PEER_TABLE_SIZE] = {};
 uint8_t ENowMesh::myMacStatic[6] = {};
 ENowMesh* ENowMesh::instance = nullptr;
 
-ENowMesh::SeenPacket ENowMesh::seenPacketsStatic[64] = {};
+ENowMesh::SeenPacket ENowMesh::seenPacketsStatic[ENowMesh::DUP_DETECT_BUFFER_SIZE] = {};
 uint16_t ENowMesh::seenPacketsIndex = 0;
 portMUX_TYPE ENowMesh::seenPacketsMux = portMUX_INITIALIZER_UNLOCKED;
 
-uint16_t ENowMesh::sequenceCounter = 0;
+ENowMesh::PendingMessage ENowMesh::pendingMessages[ENowMesh::MAX_PENDING_MESSAGES] = {};
+portMUX_TYPE ENowMesh::pendingMux = portMUX_INITIALIZER_UNLOCKED;
 
 // ----- Constructor -----
 ENowMesh::ENowMesh() {
     instance = this;
-    randomSeed(micros());  // Seed once per boot using microseconds
 }
 
 // ----- Role Management -----
@@ -185,7 +185,7 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
     else
         memset(hdr.dest_mac, 0xFF, 6); // broadcast
 
-    hdr.seq = sequenceCounter++;
+    hdr.seq = random(0xFFFF);
     hdr.hop_count = 0;
     hdr.payload_len = static_cast<uint8_t>(mlen);
 
@@ -212,6 +212,28 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
     }
 
     free(buf);
+
+    // Track unicast messages that need ACKs
+    if (dest_mac && result == ESP_OK) {
+        portENTER_CRITICAL(&pendingMux);
+        
+        // Find empty slot
+        for (size_t i = 0; i < instance->maxPendingMessages; i++) {
+            if (!pendingMessages[i].waiting) {
+                memcpy(pendingMessages[i].dest_mac, dest_mac, 6);
+                pendingMessages[i].seq = hdr.seq;
+                pendingMessages[i].sendTime = millis();
+                pendingMessages[i].retryCount = 0;
+                pendingMessages[i].payloadLen = hdr.payload_len;
+                memcpy(pendingMessages[i].payload, msg, hdr.payload_len);
+                pendingMessages[i].waiting = true;
+                break;
+            }
+        }
+        
+        portEXIT_CRITICAL(&pendingMux);
+    }
+
     return result;
 }
 
@@ -282,10 +304,25 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
             const uint8_t *pl = incomingData + sizeof(packet_hdr_t);
 
             // Check for ACK packet
-            if (m->isAckPacket(pl, hdr.payload_len)) {
-                Serial.printf("[ACK RECEIVED] from %s for seq=%u (hop_count=%u)\n", 
-                              m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq, (unsigned)hdr.hop_count);
-                return;  // ACK consumed - don't reply or forward
+            uint16_t ack_seq = 0;
+            if (m->isAckPacket(pl, hdr.payload_len, &ack_seq)) {
+                Serial.printf("[ACK RECEIVED] from %s acknowledging seq=%u\n", 
+                              m->macToStr(hdr.src_mac).c_str(), (unsigned)ack_seq);
+                
+                // Clear from pending messages
+                portENTER_CRITICAL(&pendingMux);
+                for (size_t i = 0; i < instance->maxPendingMessages; i++) {
+                    if (pendingMessages[i].waiting && 
+                        pendingMessages[i].seq == ack_seq &&
+                        memcmp(pendingMessages[i].dest_mac, hdr.src_mac, 6) == 0) {
+                        pendingMessages[i].waiting = false;
+                        Serial.printf("[MSG CONFIRMED] seq=%u delivered successfully\n", ack_seq);
+                        break;
+                    }
+                }
+                portEXIT_CRITICAL(&pendingMux);
+                
+                return;  // ACK consumed
             }
 
             // Print payload
@@ -298,9 +335,11 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
             }
         }
 
-        // Send ACK back to original sender
-        m->sendData("ACK", hdr.src_mac);
-        Serial.printf("ACK sent to %s via sendData().\n", m->macToStr(hdr.src_mac).c_str());
+        // Send ACK back to original sender with sequence number
+        char ackMsg[16];
+        snprintf(ackMsg, sizeof(ackMsg), "ACK:%u", hdr.seq);
+        m->sendData(ackMsg, hdr.src_mac);
+        Serial.printf("ACK sent to %s for seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
         
         return;  // Packet consumed - don't forward it
     }
@@ -380,18 +419,17 @@ bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
     uint32_t now = millis();
     
     // Check if we've seen this packet recently (within last 5 seconds)
-    for (size_t i = 0; i < 64; ++i) {
+    for (size_t i = 0; i < instance->dupDetectBufferSize; ++i) {
         if (!seenPacketsStatic[i].valid) continue;
         
         // Remove old entries (older than 5 seconds)
-        if (now - seenPacketsStatic[i].timestamp > 5000) {
+        if (now - seenPacketsStatic[i].timestamp > instance->dupDetectWindowMs) {
             seenPacketsStatic[i].valid = false;
             continue;
         }
         
         // Check for duplicate
-        if (memcmp(seenPacketsStatic[i].src_mac, src_mac, 6) == 0 &&
-            seenPacketsStatic[i].seq == seq) {
+        if (memcmp(seenPacketsStatic[i].src_mac, src_mac, 6) == 0 && seenPacketsStatic[i].seq == seq) {
             return true;  // Duplicate found!
         }
     }
@@ -400,7 +438,7 @@ bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
     portENTER_CRITICAL(&seenPacketsMux);
     
     uint16_t writeIndex = seenPacketsIndex;
-    seenPacketsIndex = (seenPacketsIndex + 1) % 64;
+    seenPacketsIndex = (seenPacketsIndex + 1) % instance->dupDetectBufferSize;
     
     portEXIT_CRITICAL(&seenPacketsMux);
     
@@ -414,8 +452,52 @@ bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
 }
 
 // ----- ACK Detection -----
-bool ENowMesh::isAckPacket(const uint8_t *payload, uint8_t payload_len) {
-    // Check if payload is exactly "ACK"
-    if (payload_len != 3) return false;
-    return (memcmp(payload, "ACK", 3) == 0);
+bool ENowMesh::isAckPacket(const uint8_t *payload, uint8_t payload_len, uint16_t *ack_seq) {
+    // Check if payload starts with "ACK:"
+    if (payload_len < 4) return false;
+    if (memcmp(payload, "ACK:", 4) != 0) return false;
+    
+    // Extract sequence number if requested
+    if (ack_seq && payload_len > 4) {
+        char tmp[16];
+        size_t numLen = (payload_len - 4 < 15) ? payload_len - 4 : 15;
+        memcpy(tmp, payload + 4, numLen);
+        tmp[numLen] = '\0';
+        *ack_seq = (uint16_t)atoi(tmp);
+    }
+    
+    return true;
+}
+
+// ----- Check Pending Messages for ACKs and Retries -----
+void ENowMesh::checkPendingMessages() {
+    uint32_t now = millis();
+    
+    portENTER_CRITICAL(&pendingMux);
+    
+    for (size_t i = 0; i < instance->maxPendingMessages; i++) {
+        if (!pendingMessages[i].waiting) continue;
+        
+        if (now - pendingMessages[i].sendTime > instance->ackTimeout) {
+            if (pendingMessages[i].retryCount < instance->maxRetries) {
+                // Retry
+                pendingMessages[i].retryCount++;
+                pendingMessages[i].sendTime = now;
+                
+                portEXIT_CRITICAL(&pendingMux);
+                
+                Serial.printf("[RETRY] seq=%u to %s (attempt %u/%u)\n", pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), pendingMessages[i].retryCount, instance->maxRetries);
+                
+                sendData((char*)pendingMessages[i].payload, pendingMessages[i].dest_mac);
+                
+                portENTER_CRITICAL(&pendingMux);
+            } else {
+                // Failed permanently
+                Serial.printf("[MSG FAILED] seq=%u to %s after %u retries\n", pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), instance->maxRetries);
+                pendingMessages[i].waiting = false;
+            }
+        }
+    }
+    
+    portEXIT_CRITICAL(&pendingMux);
 }
