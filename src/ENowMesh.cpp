@@ -28,10 +28,10 @@ ENowMesh::NodeRole ENowMesh::getRole() const {
 
 const char* ENowMesh::getRoleName() const {
     switch (role) {
-        case ROLE_MASTER:   return "MASTER";
-        case ROLE_REPEATER: return "REPEATER";
-        case ROLE_LEAF:     return "LEAF";
-        default:            return "UNKNOWN";
+        case ROLE_MASTER:   return "MASTER";    // 
+        case ROLE_REPEATER: return "REPEATER";  // 
+        case ROLE_LEAF:     return "LEAF";      // Does not forward
+        default:            return "UNKNOWN";   //  
     }
 }
 
@@ -76,6 +76,23 @@ String ENowMesh::macToStr(const uint8_t *mac) {
     char buf[18];
     sprintf(buf, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return String(buf);
+}
+
+const char* ENowMesh::msgTypeToStr(uint8_t msg_type) {
+    static char buf[64];
+    buf[0] = '\0';
+    
+    if (msg_type & MSG_TYPE_DATA) strcat(buf, "DATA|");
+    if (msg_type & MSG_TYPE_HELLO) strcat(buf, "HELLO|");
+    if (msg_type & MSG_TYPE_ACK) strcat(buf, "ACK|");
+    if (msg_type & MSG_TYPE_NO_FORWARD) strcat(buf, "NO_FWD|");
+    if (msg_type & MSG_TYPE_NO_ACK) strcat(buf, "NO_ACK|");
+    
+    // Remove trailing '|'
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len-1] == '|') buf[len-1] = '\0';
+    
+    return buf;
 }
 
 // =======================================
@@ -135,6 +152,53 @@ void ENowMesh::prunePeers() {
 }
 
 // =======================================
+// ===== HELLO BEACON ====
+// =======================================
+
+void ENowMesh::sendHelloBeacon() {
+    uint32_t now = millis();
+    
+    // Check if it's time to send HELLO
+    if (now - lastHelloTime < helloInterval) {
+        return;  // Not time yet
+    }
+    
+    lastHelloTime = now;
+    
+    // Build HELLO message with role info
+    char helloMsg[32];
+    snprintf(helloMsg, sizeof(helloMsg), "HELLO:%s", getRoleName());
+    
+    size_t mlen = strlen(helloMsg);
+    
+    // --- Build header ---
+    packet_hdr_t hdr = {};
+    memcpy(hdr.src_mac, myMacStatic, 6);
+    memset(hdr.dest_mac, 0xFF, 6);  // Broadcast
+    hdr.seq = random(0xFFFF);
+    hdr.hop_count = 0;
+    hdr.msg_type = MSG_TYPE_HELLO | MSG_TYPE_NO_FORWARD | MSG_TYPE_NO_ACK;  // HELLO flags
+    hdr.payload_len = static_cast<uint8_t>(mlen);
+    
+    // --- Build packet ---
+    size_t total = sizeof(packet_hdr_t) + hdr.payload_len;
+    uint8_t *buf = (uint8_t*)malloc(total);
+    if (!buf) {
+        Serial.println("HELLO: Memory allocation failed");
+        return;
+    }
+    
+    memcpy(buf, &hdr, sizeof(packet_hdr_t));
+    memcpy(buf + sizeof(packet_hdr_t), helloMsg, hdr.payload_len);
+    
+    // --- Broadcast to all peers ---
+    forwardToPeersExcept(nullptr, buf, total);
+    Serial.printf("[HELLO BEACON] Sent to all peers: %s\n", helloMsg);
+    
+    free(buf);
+}
+
+// =======================================
 // ===== COMMUNICATION FUNCTIONS ====
 // =======================================
 
@@ -157,7 +221,7 @@ void ENowMesh::forwardToPeersExcept(const uint8_t *exclude_mac, const uint8_t *d
 }
 
 // ----- Send Data -----
-esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
+esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac, uint8_t msg_type) {
     if (!msg) return ESP_ERR_INVALID_ARG;
 
     // --- Validate message length before allocating ---
@@ -184,13 +248,20 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
 
     hdr.seq = random(0xFFFF);
     hdr.hop_count = 0;
+    hdr.msg_type = msg_type;  // Use provided message type
+
+    // Set NO_ACK flag for broadcasts (if not already set)
+    if (!dest_mac && !(msg_type & MSG_TYPE_NO_ACK)) {
+        hdr.msg_type |= MSG_TYPE_NO_ACK;
+    }
+
     hdr.payload_len = static_cast<uint8_t>(mlen);
 
     // --- Allocate and build full packet ---
     size_t total = sizeof(packet_hdr_t) + hdr.payload_len;
     
     // Check ESP-NOW hardware limit
-    if (total > ESP_NOW_MAX_IE_DATA_LEN) {  // ESP_NOW_MAX_IE_DATA_LEN: ESP-NOW hardware limit
+    if (total > ESP_NOW_MAX_IE_DATA_LEN) {
         Serial.printf("ERROR: Packet too large (%u bytes > %u max)\n", (unsigned)total, (unsigned)ESP_NOW_MAX_IE_DATA_LEN);
         return ESP_ERR_INVALID_SIZE;
     }
@@ -205,17 +276,17 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
     esp_err_t result;
     if (dest_mac) {
         result = sendToMac(dest_mac, buf, total);   // unicast
-        Serial.printf("[MESH SEND] To %s | len=%u | msg='%s' | result=%d\n", macToStr(dest_mac).c_str(), (unsigned)hdr.payload_len, msg, (int)result);
+        Serial.printf("[MESH SEND] To %s | type=%s | len=%u | msg='%s' | result=%d\n", macToStr(dest_mac).c_str(), msgTypeToStr(hdr.msg_type), (unsigned)hdr.payload_len, msg, (int)result);
     } else {
         forwardToPeersExcept(nullptr, buf, total);  // broadcast
         result = ESP_OK;
-        Serial.printf("[MESH BROADCAST] len=%u | msg='%s'\n", (unsigned)hdr.payload_len, msg);
+        Serial.printf("[MESH BROADCAST] type=%s | len=%u | msg='%s'\n", msgTypeToStr(hdr.msg_type), (unsigned)hdr.payload_len, msg);
     }
 
     free(buf);
 
-    // Track unicast messages that need ACKs
-    if (dest_mac && result == ESP_OK) {
+    // Track unicast messages that need ACKs (if MSG_TYPE_NO_ACK is not set)
+    if (dest_mac && result == ESP_OK && !(hdr.msg_type & MSG_TYPE_NO_ACK)) {
         portENTER_CRITICAL(&pendingMux);
         
         // Find empty slot
@@ -308,16 +379,39 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
 
     m->touchPeer(mac_addr);
 
+    Serial.printf("[RECV] type=%s | from=%s | seq=%u | hop=%u\n", 
+                 m->msgTypeToStr(hdr.msg_type), m->macToStr(hdr.src_mac).c_str(), 
+                 (unsigned)hdr.seq, (unsigned)hdr.hop_count);
+
+    // === HANDLE HELLO BEACONS ===
+    if (hdr.msg_type & MSG_TYPE_HELLO) {
+        Serial.printf("[HELLO RECEIVED] from %s (via %s) - peer discovered\n", 
+                     m->macToStr(hdr.src_mac).c_str(), m->macToStr(mac_addr).c_str());
+        
+        // Peer already added via touchPeer() above
+        // HELLO packets are not forwarded (MSG_TYPE_NO_FORWARD flag prevents it)
+        // HELLO packets don't need ACK (MSG_TYPE_NO_ACK flag prevents it)
+        return;  // HELLO consumed
+    }
+
     // === PACKET FOR THIS NODE ===
     if (memcmp(hdr.dest_mac, myMacStatic, 6) == 0) {
-        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
+        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", 
+                     m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), 
+                     m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
 
         if (hdr.payload_len > 0) {
             const uint8_t *pl = incomingData + sizeof(packet_hdr_t);
 
-            // Check for ACK packet
-            uint16_t ack_seq = 0;
-            if (m->isAckPacket(pl, hdr.payload_len, &ack_seq)) {
+            // Check for ACK packet using MSG_TYPE_ACK flag
+            if (hdr.msg_type & MSG_TYPE_ACK) {
+                // Extract acknowledged sequence number from payload
+                char tmp[16];
+                size_t copyLen = (hdr.payload_len < 15) ? hdr.payload_len : 15;
+                memcpy(tmp, pl, copyLen);
+                tmp[copyLen] = '\0';
+                uint16_t ack_seq = (uint16_t)atoi(tmp);
+                
                 Serial.printf("[ACK RECEIVED] from %s acknowledging seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)ack_seq);
                 
                 // Clear from pending messages
@@ -344,16 +438,27 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
             }
         }
 
-        // Send ACK back to original sender with sequence number
-        char ackMsg[16];
-        snprintf(ackMsg, sizeof(ackMsg), "ACK:%u", hdr.seq);
-        m->sendData(ackMsg, hdr.src_mac);
-        Serial.printf("ACK sent to %s for seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
+        // Send ACK back to original sender (only if MSG_TYPE_NO_ACK is not set)
+        if (!(hdr.msg_type & MSG_TYPE_NO_ACK)) {
+            char ackPayload[8];
+            snprintf(ackPayload, sizeof(ackPayload), "%u", hdr.seq);
+            
+            // Use sendData with MSG_TYPE_ACK flag (ACKs don't need their own ACKs)
+            m->sendData(ackPayload, hdr.src_mac, MSG_TYPE_ACK | MSG_TYPE_NO_ACK);
+            Serial.printf("ACK sent to %s for seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
+        }
         
         return;  // Packet consumed - don't forward it
     }
 
     // === FORWARDING LOGIC ===
+    
+    // Check if packet should not be forwarded
+    if (hdr.msg_type & MSG_TYPE_NO_FORWARD) {
+        Serial.println("Packet has NO_FORWARD flag - not forwarding.");
+        return;
+    }
+
     // Check hop limit
     if (hdr.hop_count >= m->maxHops) {
         Serial.println("Max hops reached. Dropping packet.");
@@ -400,7 +505,10 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
         if (peerIndex >= 0) {
             esp_err_t r = esp_now_send(ENowMesh::peersStatic[peerIndex].mac, fwdBuf, fwdLen);
             if (r == ESP_OK) {
-                Serial.printf("Forwarded directly to %s (src %s dest %s) hop->%u\n", m->macToStr(ENowMesh::peersStatic[peerIndex].mac).c_str(), m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), fwd_hdr->hop_count);
+                Serial.printf("Forwarded directly to %s (src %s dest %s) hop->%u\n", 
+                             m->macToStr(ENowMesh::peersStatic[peerIndex].mac).c_str(), 
+                             m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), 
+                             fwd_hdr->hop_count);
                 free(fwdBuf);
                 return;  // Success - don't also flood
             }
@@ -410,7 +518,9 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
         
         // Destination unknown or direct send failed – flood to peers
         m->forwardToPeersExcept(mac_addr, fwdBuf, fwdLen);
-        Serial.printf("Flooded packet (src %s dest %s) hop->%u\n", m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), fwd_hdr->hop_count);
+        Serial.printf("Flooded packet (src %s dest %s) hop->%u\n", 
+                     m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), 
+                     fwd_hdr->hop_count);
     }
 
     free(fwdBuf);
@@ -420,11 +530,11 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
 bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
     uint32_t now = millis();
     
-    // Check if we've seen this packet recently (within last 5 seconds)
+    // Check if we've seen this packet recently
     for (size_t i = 0; i < instance->dupDetectBufferSize; ++i) {
         if (!seenPacketsStatic[i].valid) continue;
         
-        // Remove old entries (older than 5 seconds)
+        // Remove old entries
         if (now - seenPacketsStatic[i].timestamp > instance->dupDetectWindowMs) {
             seenPacketsStatic[i].valid = false;
             continue;
@@ -453,24 +563,6 @@ bool ENowMesh::isDuplicate(const uint8_t *src_mac, uint16_t seq) {
     return false;
 }
 
-// ----- ACK Detection -----
-bool ENowMesh::isAckPacket(const uint8_t *payload, uint8_t payload_len, uint16_t *ack_seq) {
-    // Check if payload starts with "ACK:"
-    if (payload_len < 4) return false;
-    if (memcmp(payload, "ACK:", 4) != 0) return false;
-    
-    // Extract sequence number if requested
-    if (ack_seq && payload_len > 4) {
-        char tmp[16];
-        size_t numLen = (payload_len - 4 < 15) ? payload_len - 4 : 15;
-        memcpy(tmp, payload + 4, numLen);
-        tmp[numLen] = '\0';
-        *ack_seq = (uint16_t)atoi(tmp);
-    }
-    
-    return true;
-}
-
 // ----- Check Pending Messages for ACKs and Retries -----
 void ENowMesh::checkPendingMessages() {
     uint32_t now = millis();
@@ -488,14 +580,18 @@ void ENowMesh::checkPendingMessages() {
                 
                 portEXIT_CRITICAL(&pendingMux);
                 
-                Serial.printf("[RETRY] seq=%u to %s (attempt %u/%u)\n", pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), pendingMessages[i].retryCount, instance->maxRetries);
+                Serial.printf("[RETRY] seq=%u to %s (attempt %u/%u)\n", 
+                             pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), 
+                             pendingMessages[i].retryCount, instance->maxRetries);
                 
                 sendData((char*)pendingMessages[i].payload, pendingMessages[i].dest_mac);
                 
                 portENTER_CRITICAL(&pendingMux);
             } else {
                 // Failed permanently
-                Serial.printf("[MSG FAILED] seq=%u to %s after %u retries\n", pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), instance->maxRetries);
+                Serial.printf("[MSG FAILED] seq=%u to %s after %u retries\n", 
+                             pendingMessages[i].seq, macToStr(pendingMessages[i].dest_mac).c_str(), 
+                             instance->maxRetries);
                 pendingMessages[i].waiting = false;
             }
         }

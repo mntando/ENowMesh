@@ -9,6 +9,15 @@
 class ENowMesh {
     public:
         // ========================================
+        // MESSAGE TYPE FLAGS
+        // ========================================
+        static constexpr uint8_t MSG_TYPE_DATA       = 0x01;  // Regular data message
+        static constexpr uint8_t MSG_TYPE_HELLO      = 0x02;  // Hello beacon
+        static constexpr uint8_t MSG_TYPE_ACK        = 0x04;  // Acknowledgment
+        static constexpr uint8_t MSG_TYPE_NO_FORWARD = 0x08;  // Don't forward this packet
+        static constexpr uint8_t MSG_TYPE_NO_ACK     = 0x10;  // Don't send ACK for this
+
+        // ========================================
         // CONFIGURABLE MESH PARAMETERS
         // ========================================
         // Call these in setup() BEFORE initWiFi() to customize behavior
@@ -27,7 +36,7 @@ class ENowMesh {
         // --- Payload Configuration ---
         uint16_t maxPayload = 200;  
         // Maximum payload size in bytes (excluding header)
-        // Recommended: Short messages: 100 bytes, General use: 200 bytes, Maximum: 234 bytes (250 - 16 byte header), ESP-NOW limit is 250 bytes total; header uses ~16 bytes
+        // Recommended: Short messages: 100 bytes, General use: 200 bytes, Maximum: 234 bytes (250 - 17 byte header), ESP-NOW limit is 250 bytes total; header uses ~17 bytes
         
         // --- Timing Parameters ---
         uint32_t peerTimeout = 60000UL;  // 60 seconds
@@ -54,6 +63,11 @@ class ENowMesh {
         uint8_t maxPendingMessages = 16;  
         // Maximum simultaneous pending messages awaiting ACK
         // Recommended: Low message rate: 8, General use: 16, High throughput: 32, Must not exceed MAX_PENDING_MESSAGES constant
+
+        // --- Hello Beacon Parameters ---
+        uint32_t helloInterval = 15000;  // 15 seconds
+        // How often to send HELLO beacons (milliseconds)
+        // Recommended: MASTER/REPEATER: 15000-30000ms, LEAF: 60000-120000ms (power saving)
 
         // ========================================
         // COMPILE-TIME CONSTANTS
@@ -101,9 +115,10 @@ class ENowMesh {
         // Loop functions (call regularly)
         void prunePeers();              // Remove inactive peers
         void checkPendingMessages();     // Handle retries and timeouts
+        void sendHelloBeacon();         // Send periodic HELLO beacon
 
         // Communication
-        esp_err_t sendData(const char *msg, const uint8_t *dest_mac = nullptr);
+        esp_err_t sendData(const char *msg, const uint8_t *dest_mac = nullptr, uint8_t msg_type = MSG_TYPE_DATA);
         // Send message to specific node (unicast) or all nodes (broadcast if dest_mac=nullptr)
         // Returns: ESP_OK on success, error code otherwise
 
@@ -115,9 +130,10 @@ class ENowMesh {
             uint8_t dest_mac[6];     // Destination MAC (0xFF... for broadcast)
             uint16_t seq;            // Sequence number for duplicate detection
             uint8_t hop_count;       // Current hop count (incremented at each hop)
+            uint8_t msg_type;        // Message type flags (NEW!)
             uint8_t payload_len;     // Payload length in bytes
         } packet_hdr_t;
-        // Total header size: 16 bytes
+        // Total header size: 17 bytes
 
         // ========================================
         // PEER MANAGEMENT
@@ -166,7 +182,7 @@ class ENowMesh {
             uint16_t seq;
             uint32_t sendTime;
             uint8_t retryCount;
-            char payload[234];  // Max: 250 - 16 byte header
+            char payload[233];  // Max: 250 - 17 byte header
             uint8_t payloadLen;
             bool waiting;
         };
@@ -190,12 +206,13 @@ class ENowMesh {
         // INTERNAL STATE
         // ========================================
         NodeRole role = ROLE_MASTER;
+        uint32_t lastHelloTime = 0;  // Track last HELLO beacon time
 
         // ========================================
         // HELPER METHODS
         // ========================================
         bool isDuplicate(const uint8_t *src_mac, uint16_t seq);
-        bool isAckPacket(const uint8_t *payload, uint8_t payload_len, uint16_t *ack_seq);
+        const char* msgTypeToStr(uint8_t msg_type);  // Helper for debug logging
 };
 
 #endif
