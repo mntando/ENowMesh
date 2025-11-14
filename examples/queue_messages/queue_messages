@@ -1,0 +1,262 @@
+/*
+ * ESP-NOW Mesh - Node with Message Queue Example
+ * 
+ * This example demonstrates how to handle messages that require slow operations
+ * (delays, sensor reads, complex processing) by queuing them and processing
+ * in loop() instead of blocking the ESP-NOW receive callback.
+ * 
+ * Use this pattern when you need to:
+ * - Read sensors that take time (DHT, ultrasonic, etc.)
+ * - Blink LEDs or control servos with delays
+ * - Parse complex data or do calculations
+ * - Send multiple responses
+ * 
+ * Commands this node responds to:
+ * - "BLINK" - Blinks LED 3 times
+ * - "READ_TEMP" - Reads temperature sensor and replies
+ * - "PING" - Replies with "PONG"
+ * - "MOTOR:xxx" - Sets motor speed with smooth ramp
+ */
+
+#include <Arduino.h>
+#include "ENowMesh.h"
+
+ENowMesh mesh;
+
+// Pin definitions (adjust for your hardware)
+#define LED_PIN 2
+#define MOTOR_PIN 25  // PWM capable pin
+
+// ========================================
+// MESSAGE QUEUE STRUCTURE
+// ========================================
+struct ReceivedMessage {
+  uint8_t src_mac[6];     // Who sent it
+  char payload[200];       // Message content
+  size_t len;              // Payload length
+};
+
+// Queue configuration
+const size_t QUEUE_SIZE = 10;  // Can hold 10 pending messages
+ReceivedMessage messageQueue[QUEUE_SIZE];
+volatile size_t queueHead = 0;  // Write position (ISR writes here)
+volatile size_t queueTail = 0;  // Read position (loop reads here)
+portMUX_TYPE queueMux = portMUX_INITIALIZER_UNLOCKED;  // Thread safety
+
+// ========================================
+// FAST CALLBACK - Just Queue The Message
+// ========================================
+// This runs in ESP-NOW context - MUST be fast!
+// No delays, no blocking operations, no slow code.
+void onMessageReceived(const uint8_t *src_mac, const char *payload, size_t len) {
+  portENTER_CRITICAL(&queueMux);
+  
+  // Calculate next write position
+  size_t nextHead = (queueHead + 1) % QUEUE_SIZE;
+  
+  // Check if queue is full
+  if (nextHead != queueTail) {
+    // Copy message to queue
+    memcpy(messageQueue[queueHead].src_mac, src_mac, 6);
+    memcpy(messageQueue[queueHead].payload, payload, len);
+    messageQueue[queueHead].payload[len] = '\0';  // Null terminate
+    messageQueue[queueHead].len = len;
+    
+    // Move write position forward
+    queueHead = nextHead;
+  } else {
+    // Queue full - message dropped (you could add error handling here)
+    Serial.println("Message queue full! Dropping message.");
+  }
+  
+  portEXIT_CRITICAL(&queueMux);
+  
+  // That's it! Return quickly so ESP-NOW can receive more packets.
+}
+
+// ========================================
+// SLOW MESSAGE PROCESSING - In loop()
+// ========================================
+// This processes queued messages - can use delays, sensor reads, etc.
+void processMessages() {
+  // Process all queued messages
+  while (queueTail != queueHead) {
+    // Get message from queue (thread-safe)
+    portENTER_CRITICAL(&queueMux);
+    ReceivedMessage msg = messageQueue[queueTail];
+    queueTail = (queueTail + 1) % QUEUE_SIZE;
+    portEXIT_CRITICAL(&queueMux);
+    
+    // Now we can do SLOW operations safely!
+    Serial.printf("\nProcessing message from %s: '%s'\n", 
+                  mesh.macToStr(msg.src_mac).c_str(), msg.payload);
+    
+    // ---- Handle different commands ----
+    
+    if (strcmp(msg.payload, "BLINK") == 0) {
+      Serial.println("Blinking LED...");
+      for (int i = 0; i < 3; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(200);  // Safe here! (not in callback)
+        digitalWrite(LED_PIN, LOW);
+        delay(200);
+      }
+      mesh.sendData("BLINK_DONE", msg.src_mac);
+    }
+    
+    else if (strcmp(msg.payload, "READ_TEMP") == 0) {
+      Serial.println("🌡️  Reading temperature...");
+      
+      // Simulate slow sensor read (replace with real sensor)
+      delay(250);  // Safe here!
+      float temp = 20.0 + random(0, 100) / 10.0;  // Fake reading
+      
+      // Send response
+      char response[64];
+      snprintf(response, sizeof(response), "TEMP:%.1f", temp);
+      mesh.sendData(response, msg.src_mac);
+      Serial.printf("Sent: %s\n", response);
+    }
+    
+    else if (strcmp(msg.payload, "PING") == 0) {
+      Serial.println("Ping received, sending pong...");
+      mesh.sendData("PONG", msg.src_mac);
+    }
+    
+    else if (strncmp(msg.payload, "MOTOR:", 6) == 0) {
+      int speed = atoi(msg.payload + 6);
+      speed = constrain(speed, 0, 255);
+      
+      Serial.printf("Setting motor to speed %d with smooth ramp...\n", speed);
+      
+      // Smooth ramp up (requires delays)
+      analogWrite(MOTOR_PIN, 0);
+      delay(100);  // Safe here!
+      
+      for (int s = 0; s <= speed; s += 10) {
+        analogWrite(MOTOR_PIN, s);
+        delay(50);  // Safe here!
+      }
+      
+      mesh.sendData("MOTOR_OK", msg.src_mac);
+      Serial.println("Motor speed set");
+    }
+    
+    else {
+      Serial.printf("Unknown command: %s\n", msg.payload);
+    }
+  }
+}
+
+// ========================================
+// SETUP
+// ========================================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== ESP-NOW MESH NODE (With Message Queue) ===");
+  
+  // Setup pins
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(MOTOR_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  analogWrite(MOTOR_PIN, 0);
+  
+  // Setup mesh
+  mesh.setRole(ENowMesh::ROLE_REPEATER);  // or ROLE_LEAF if you don't want to forward
+  Serial.printf("Role: %s\n", mesh.getRoleName());
+  
+  mesh.initWiFi();
+  mesh.setChannel();
+  mesh.initEspNow();
+  mesh.registerCallbacks();
+  
+  // Register our fast callback that queues messages
+  mesh.setMessageCallback(onMessageReceived);
+  
+  Serial.println("Node initialized successfully.");
+  Serial.println("\nSupported commands:");
+  Serial.println("  BLINK        - Blink LED 3 times");
+  Serial.println("  READ_TEMP    - Read temperature sensor");
+  Serial.println("  PING         - Test connectivity");
+  Serial.println("  MOTOR:xxx    - Set motor speed (0-255)");
+  Serial.println();
+}
+
+// ========================================
+// LOOP
+// ========================================
+unsigned long lastHeartbeat = 0;
+
+void loop() {
+  // Regular mesh maintenance
+  mesh.prunePeers();
+  mesh.checkPendingMessages();
+  mesh.sendHelloBeacon();
+  
+  // Process any queued messages (this is where slow operations happen)
+  processMessages();
+  
+  // Optional: Send periodic heartbeat
+  if (millis() - lastHeartbeat >= 30000) {  // Every 30 seconds
+    lastHeartbeat = millis();
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Heartbeat from %s", mesh.getRoleName());
+    mesh.sendData(msg);
+    Serial.println("Heartbeat sent");
+  }
+  
+  delay(100);  // This delay is fine - doesn't affect message reception!
+}
+
+
+// ========================================
+// NOTES AND TIPS
+// ========================================
+/*
+ * WHY USE A QUEUE?
+ * ----------------
+ * ESP-NOW callbacks run in interrupt/WiFi context. Blocking them causes:
+ * - Packet loss (can't receive while callback is blocked)
+ * - WiFi stack instability
+ * - Poor mesh performance
+ * 
+ * The queue lets the callback return immediately while your app processes
+ * messages at its own pace in loop().
+ * 
+ * 
+ * WHEN DO YOU NEED A QUEUE?
+ * -------------------------
+ * Use queue if your message handling involves:
+ *    - delay() calls
+ *    - Sensor readings (DHT, ultrasonic, etc.)
+ *    - Multiple sendData() calls
+ *    - Complex calculations
+ *    - Display updates (OLED, LCD)
+ *    - File/EEPROM operations
+ * 
+ * WHEN YOU DON'T NEED A QUEUE?
+ * -------------------------
+ * Simple callback is fine if you only:
+ *    - digitalWrite() / analogWrite()
+ *    - Set variables
+ *    - Simple math
+ *    - Serial.print() (it's non-blocking)
+ * 
+ * 
+ * QUEUE SIZE TUNING
+ * -----------------
+ * - Small (5-10): Light message traffic, simple commands
+ * - Medium (10-20): Moderate traffic, or slow processing
+ * - Large (20-50): Heavy traffic, complex multi-step operations
+ * 
+ * Each queued message uses ~212 bytes of RAM.
+ * 
+ * 
+ * THREAD SAFETY
+ * -------------
+ * portENTER_CRITICAL / portEXIT_CRITICAL protect the queue from race conditions
+ * since the callback (ISR) and loop() (main) access it simultaneously.
+ * 
+ * Keep critical sections SHORT - only protect the actual queue operations!
+ */

@@ -163,6 +163,10 @@ class ENowMesh {
         static void OnDataSent(const esp_now_send_info_t *info, esp_now_send_status_t status);
         static void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len);
 
+        // On Message receive user callback (External Use)
+        typedef void (*MessageCallback)(const uint8_t *src_mac, const char *payload, size_t len);
+        void setMessageCallback(MessageCallback cb);
+
     private:
         // ========================================
         // INTERNAL STRUCTURES
@@ -186,6 +190,9 @@ class ENowMesh {
             uint8_t payloadLen;
             bool waiting;
         };
+
+        // Message receive user callback
+        MessageCallback userCallback = nullptr;
 
         // ========================================
         // STATIC STORAGE

@@ -66,6 +66,11 @@ void ENowMesh::registerCallbacks() {
     esp_now_register_recv_cb(OnDataRecv);
 }
 
+// ----- User Callbacks -----
+void ENowMesh::setMessageCallback(MessageCallback cb) {
+    userCallback = cb;
+}
+
 // ----- Set WiFi Channel -----
 void ENowMesh::setChannel() {
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
@@ -434,6 +439,12 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
                 memcpy(tmp, pl, hdr.payload_len);
                 tmp[hdr.payload_len] = '\0';
                 Serial.printf("Payload: %s\n", tmp);
+
+                // Call user callback if registered
+                if (m->userCallback) {
+                    m->userCallback(hdr.src_mac, tmp, hdr.payload_len);
+                }
+                
                 free(tmp);
             }
         }
