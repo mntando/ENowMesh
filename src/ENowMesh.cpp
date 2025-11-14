@@ -74,8 +74,7 @@ void ENowMesh::setChannel() {
 // ----- Helpers -----
 String ENowMesh::macToStr(const uint8_t *mac) {
     char buf[18];
-    sprintf(buf, "%02X:%02X:%02X:%02X:%02X:%02X",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    sprintf(buf, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return String(buf);
 }
 
@@ -167,12 +166,10 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
         Serial.println("sendData: empty message, ignoring.");
         return ESP_ERR_INVALID_ARG;
     } if (mlen > maxPayload) {
-        Serial.printf("sendData: message too long (%u > maxPayload %u)\n",
-                      (unsigned)mlen, (unsigned)maxPayload);
+        Serial.printf("sendData: message too long (%u > maxPayload %u)\n", (unsigned)mlen, (unsigned)maxPayload);
         return ESP_ERR_INVALID_SIZE;
     } if (mlen > 255) {
-        Serial.printf("sendData: payload too large for uint8_t field (%u > 255)\n",
-                      (unsigned)mlen);
+        Serial.printf("sendData: payload too large for uint8_t field (%u > 255)\n", (unsigned)mlen);
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -191,6 +188,13 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
 
     // --- Allocate and build full packet ---
     size_t total = sizeof(packet_hdr_t) + hdr.payload_len;
+    
+    // Check ESP-NOW hardware limit
+    if (total > ESP_NOW_MAX_IE_DATA_LEN) {  // ESP_NOW_MAX_IE_DATA_LEN: ESP-NOW hardware limit
+        Serial.printf("ERROR: Packet too large (%u bytes > %u max)\n", (unsigned)total, (unsigned)ESP_NOW_MAX_IE_DATA_LEN);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    
     uint8_t *buf = (uint8_t*)malloc(total);
     if (!buf) return ESP_ERR_NO_MEM;
 
@@ -201,14 +205,11 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
     esp_err_t result;
     if (dest_mac) {
         result = sendToMac(dest_mac, buf, total);   // unicast
-        Serial.printf("[MESH SEND] To %s | len=%u | msg='%s' | result=%d\n",
-                      macToStr(dest_mac).c_str(),
-                      (unsigned)hdr.payload_len, msg, (int)result);
+        Serial.printf("[MESH SEND] To %s | len=%u | msg='%s' | result=%d\n", macToStr(dest_mac).c_str(), (unsigned)hdr.payload_len, msg, (int)result);
     } else {
         forwardToPeersExcept(nullptr, buf, total);  // broadcast
         result = ESP_OK;
-        Serial.printf("[MESH BROADCAST] len=%u | msg='%s'\n",
-                      (unsigned)hdr.payload_len, msg);
+        Serial.printf("[MESH BROADCAST] len=%u | msg='%s'\n", (unsigned)hdr.payload_len, msg);
     }
 
     free(buf);
@@ -243,11 +244,23 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac) {
 // =======================================
 
 void ENowMesh::OnDataSent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
-    const uint8_t *mac_addr = info ? info->des_addr : NULL;
-    if (mac_addr) {
-        Serial.printf("Sent callback to %02X:%02X:%02X:%02X:%02X:%02X - status: %s\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5], status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED");
+    ENowMesh *m = instance;
+    if (!m || !info) return;
+    
+    const uint8_t *mac_addr = info->des_addr;
+    if (!mac_addr) return;
+    
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        Serial.printf("Sent OK to %02X:%02X:%02X:%02X:%02X:%02X\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
     } else {
-        Serial.printf("Send callback (unknown peer) - status: %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAILED");
+        Serial.printf("Send FAILED to %02X:%02X:%02X:%02X:%02X:%02X - removing peer\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+        
+        // Remove failed peer immediately
+        int idx = m->findPeer(mac_addr);
+        if (idx >= 0) {
+            esp_now_del_peer(mac_addr);
+            m->peersStatic[idx].valid = false;
+        }
     }
 }
 
@@ -276,8 +289,7 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
 
     // Duplicate detection (before any processing)
     if (m->isDuplicate(hdr.src_mac, hdr.seq)) {
-        Serial.printf("DUPLICATE packet detected (src=%s seq=%u) - dropping\n", 
-                      m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
+        Serial.printf("DUPLICATE packet detected (src=%s seq=%u) - dropping\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
         m->touchPeer(mac_addr);  // still update peer table
         return;
     }
@@ -306,15 +318,12 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
             // Check for ACK packet
             uint16_t ack_seq = 0;
             if (m->isAckPacket(pl, hdr.payload_len, &ack_seq)) {
-                Serial.printf("[ACK RECEIVED] from %s acknowledging seq=%u\n", 
-                              m->macToStr(hdr.src_mac).c_str(), (unsigned)ack_seq);
+                Serial.printf("[ACK RECEIVED] from %s acknowledging seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)ack_seq);
                 
                 // Clear from pending messages
                 portENTER_CRITICAL(&pendingMux);
                 for (size_t i = 0; i < instance->maxPendingMessages; i++) {
-                    if (pendingMessages[i].waiting && 
-                        pendingMessages[i].seq == ack_seq &&
-                        memcmp(pendingMessages[i].dest_mac, hdr.src_mac, 6) == 0) {
+                    if (pendingMessages[i].waiting && pendingMessages[i].seq == ack_seq && memcmp(pendingMessages[i].dest_mac, hdr.src_mac, 6) == 0) {
                         pendingMessages[i].waiting = false;
                         Serial.printf("[MSG CONFIRMED] seq=%u delivered successfully\n", ack_seq);
                         break;
@@ -384,31 +393,24 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
     if (isBroadcast) {
         // Always flood broadcasts
         m->forwardToPeersExcept(mac_addr, fwdBuf, fwdLen);
-        Serial.printf("Flooded broadcast packet (src %s) hop->%u\n", 
-                      m->macToStr(hdr.src_mac).c_str(), fwd_hdr->hop_count);
+        Serial.printf("Flooded broadcast packet (src %s) hop->%u\n", m->macToStr(hdr.src_mac).c_str(), fwd_hdr->hop_count);
     } else {
         // Try direct send to destination if it's a known peer
         int peerIndex = m->findPeer(hdr.dest_mac);
         if (peerIndex >= 0) {
             esp_err_t r = esp_now_send(ENowMesh::peersStatic[peerIndex].mac, fwdBuf, fwdLen);
             if (r == ESP_OK) {
-                Serial.printf("Forwarded directly to %s (src %s dest %s) hop->%u\n", 
-                              m->macToStr(ENowMesh::peersStatic[peerIndex].mac).c_str(), 
-                              m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), 
-                              fwd_hdr->hop_count);
+                Serial.printf("Forwarded directly to %s (src %s dest %s) hop->%u\n", m->macToStr(ENowMesh::peersStatic[peerIndex].mac).c_str(), m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), fwd_hdr->hop_count);
                 free(fwdBuf);
                 return;  // Success - don't also flood
             }
             // Only flood if direct send failed
-            Serial.printf("Direct send to %s failed (%d), falling back to flood.\n", 
-                          m->macToStr(hdr.dest_mac).c_str(), r);
+            Serial.printf("Direct send to %s failed (%d), falling back to flood.\n", m->macToStr(hdr.dest_mac).c_str(), r);
         }
         
         // Destination unknown or direct send failed – flood to peers
         m->forwardToPeersExcept(mac_addr, fwdBuf, fwdLen);
-        Serial.printf("Flooded packet (src %s dest %s) hop->%u\n", 
-                      m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), 
-                      fwd_hdr->hop_count);
+        Serial.printf("Flooded packet (src %s dest %s) hop->%u\n", m->macToStr(hdr.src_mac).c_str(), m->macToStr(hdr.dest_mac).c_str(), fwd_hdr->hop_count);
     }
 
     free(fwdBuf);
