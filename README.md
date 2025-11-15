@@ -1,394 +1,384 @@
-# ENowMesh Library
+# ENowMesh
 
-A flexible ESP-NOW mesh networking library for ESP32 devices that enables reliable multi-hop communication with configurable node roles, duplicate detection, ACK/retry mechanisms, and automatic peer discovery.
+**ESP-NOW Mesh Networking Library for ESP32**
+
+A lightweight, self-organizing mesh network library using Espressif's ESP-NOW protocol. Build robust multi-hop networks without WiFi infrastructure - perfect for IoT sensors, home automation, and distributed systems.
 
 ## Features
 
-- **Multi-hop Mesh Networking**: Packets automatically forward through the network to reach distant nodes
-- **Three Node Roles**:
-  - **MASTER**: Initiates messages, full routing capability
-  - **REPEATER**: Forwards all messages, ideal for intermediate nodes
-  - **LEAF**: End devices that don't forward packets (power-saving)
-- **Automatic Peer Discovery**: HELLO beacons for network topology awareness
-- **Duplicate Detection**: Tracks recently seen packets to prevent loops
-- **ACK/Retry Mechanism**: Unicast messages can request acknowledgments with automatic retries
-- **Message Type Flags**: DATA, HELLO, ACK, NO_FORWARD, NO_ACK
-- **Configurable Parameters**: Customize mesh behavior at runtime without recompiling most settings
-- **Thread-Safe Operations**: Critical sections protect shared state
+- **Self-Organizing Mesh** - Nodes automatically discover peers and route messages through multiple hops
+- **Three Node Roles** - MASTER (hub), REPEATER (router), LEAF (end device)
+- **Reliable Delivery** - Automatic ACK/retry mechanism for unicast messages
+- **Smart Routing** - Direct unicast when possible, intelligent flooding fallback
+- **Role-Based Routing** - Send messages specifically to MASTER or REPEATER nodes
+- **Duplicate Detection** - Prevents message loops in the mesh
+- **Configurable** - Tune hop limits, timeouts, retries, and more
+- **Lightweight** - Minimal memory footprint, runs on ESP32 with ~10KB RAM
+
+## Why ESP-NOW Mesh?
+
+- **No WiFi Router Needed** - Direct device-to-device communication
+- **Low Latency** - Typical 50-200ms per hop (vs. WiFi + server roundtrip)
+- **Long Range** - Up to 200m+ outdoor (ESP-NOW's range)
+- **Low Power** - Sleep-friendly for battery nodes
+- **Simple API** - Start meshing in 10 lines of code
+
+## Hardware Requirements
+
+- **ESP32** (any variant: ESP32, ESP32-S2, ESP32-S3, ESP32-C3)
+- Minimum 2 nodes to form a mesh
+- All nodes must use the **same WiFi channel**
 
 ## Installation
 
-1. Download or clone this library to your Arduino libraries folder:
-   ```
-   ~/Documents/Arduino/libraries/ENowMesh/
-   ```
+### Arduino IDE
+1. Download this repository as ZIP
+2. Sketch → Include Library → Add .ZIP Library
+3. Select the downloaded ZIP file
 
-2. Restart the Arduino IDE
-
-3. The library will appear under **Sketch > Include Library > ENowMesh**
+### PlatformIO
+```ini
+lib_deps = 
+    https://github.com/yourusername/ENowMesh.git
+```
 
 ## Quick Start
 
-### Basic Setup (Repeater Node)
+### Basic Node (10 Lines)
 
 ```cpp
 #include "ENowMesh.h"
-
 ENowMesh mesh;
 
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-  
-  // Configure as REPEATER (forwards all messages)
-  mesh.setRole(ENowMesh::ROLE_REPEATER);
-  
-  // Initialize mesh
-  mesh.initWiFi();
-  mesh.setChannel();
-  mesh.initEspNow();
-  mesh.registerCallbacks();
-  
-  Serial.println("Mesh node ready!");
+    Serial.begin(115200);
+    mesh.initWiFi();
+    mesh.initEspNow();
+    mesh.setChannel();
+    mesh.registerCallbacks();
 }
 
 void loop() {
-  mesh.prunePeers();           // Clean up inactive peers
-  mesh.sendHelloBeacon();      // Advertise presence
-  mesh.checkPendingMessages(); // Handle ACK retries
-  
-  delay(100);
+    mesh.sendData("Hello mesh!");
+    mesh.sendHelloBeacon();
+    mesh.checkPendingMessages();
+    mesh.prunePeers();
+    delay(10000);
 }
 ```
 
-### Sending Messages
+### Receiving Messages
 
-**Broadcast (to all nodes):**
+```cpp
+void onMessage(const uint8_t *src_mac, const char *payload, size_t len) {
+    Serial.printf("Received: %s\n", payload);
+}
+
+void setup() {
+    // ... init code ...
+    mesh.setMessageCallback(onMessage);
+}
+```
+
+## Node Roles
+
+Configure role **before** `initWiFi()`:
+
+```cpp
+// MASTER - Hub node, never sleeps, initiates commands
+mesh.setRole(ENowMesh::ROLE_MASTER);
+
+// REPEATER - Routes all messages, extends range (default)
+mesh.setRole(ENowMesh::ROLE_REPEATER);
+
+// LEAF - End device, does NOT forward (power saving)
+mesh.setRole(ENowMesh::ROLE_LEAF);
+```
+
+**Role Behavior:**
+- **MASTER**: Processes `sendToMaster()` messages, full routing
+- **REPEATER**: Forwards all messages, processes `sendToRepeaters()`
+- **LEAF**: Never forwards (saves power/bandwidth)
+
+## Sending Messages
+
+### 1. Broadcast to Everyone
 ```cpp
 mesh.sendData("Hello everyone!");
 ```
 
-**Unicast (to specific node):**
+### 2. Send to Any MASTER Node (Anycast)
 ```cpp
-uint8_t targetMac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-mesh.sendData("Hello specific node", targetMac);
+mesh.sendToMaster("Data for master");
+// First MASTER in path processes it, packet dropped after
 ```
 
-**With custom message type:**
+### 3. Send to All REPEATER Nodes (Multicast)
 ```cpp
-// Send broadcast without expecting ACK
-mesh.sendData("Status update", nullptr, ENowMesh::MSG_TYPE_NO_ACK);
+mesh.sendToRepeaters("Update all routers");
+// Every REPEATER processes AND forwards it
+```
+
+### 4. Unicast to Specific MAC
+```cpp
+uint8_t targetMAC[] = {0x24, 0x6F, 0x28, 0xAB, 0xCD, 0xEF};
+mesh.sendData("Private message", targetMAC);
+// Automatic ACK/retry, routed through mesh if needed
+```
+
+### 5. Custom Message Types
+```cpp
+// No ACK required (fire-and-forget)
+mesh.sendData("Sensor reading", nullptr, ENowMesh::MSG_TYPE_DATA | ENowMesh::MSG_TYPE_NO_ACK);
+
+// Don't forward (local broadcast only)
+mesh.sendData("Local only", nullptr, ENowMesh::MSG_TYPE_DATA | ENowMesh::MSG_TYPE_NO_FORWARD);
 ```
 
 ## Configuration
 
-All configuration is done via public member variables. Set these **before** calling `initWiFi()`:
+Customize **before** `initWiFi()`:
 
-### Network Topology
 ```cpp
-mesh.channel = 1;           // WiFi channel (1-13), must match all nodes
-mesh.maxHops = 6;           // Maximum forwarding hops
-mesh.maxPeers = 128;        // Maximum active peers to track
+void setup() {
+    // Network topology
+    mesh.channel = 6;              // WiFi channel (all nodes must match!)
+    mesh.maxHops = 8;              // Max forwarding hops (default: 6)
+    
+    // Payload size
+    mesh.maxPayload = 200;         // Max message bytes (default: 200, max: 234)
+    
+    // Timing
+    mesh.peerTimeout = 60000;      // Remove inactive peers after 60s
+    mesh.ackTimeout = 2000;        // Wait 2s for ACK before retry
+    mesh.maxRetries = 3;           // Retry failed sends 3 times
+    mesh.helloInterval = 15000;    // Send HELLO beacon every 15s
+    
+    // Duplicate detection
+    mesh.dupDetectBufferSize = 64; // Remember last 64 packets
+    mesh.dupDetectWindowMs = 10000; // Forget packets older than 10s
+    
+    mesh.initWiFi();
+    // ... rest of init ...
+}
 ```
 
-### Payload & Timing
+### Configuration Guidelines
+
+| Parameter | Small Mesh (3-5 nodes) | Medium (5-15) | Large (15+) |
+|-----------|------------------------|---------------|-------------|
+| `maxHops` | 3-4 | 5-6 | 7-10 |
+| `ackTimeout` | 1500ms | 2000ms | 3000ms+ |
+| `dupDetectBufferSize` | 32 | 64 | 128 |
+| `dupDetectWindowMs` | 5000ms | 10000ms | 15000ms |
+
+**Formula for `ackTimeout`:** `(maxHops × 500ms) + 500ms buffer`  
+**Formula for `dupDetectWindowMs`:** `(maxHops × 1000ms) + 3000ms safety`
+
+## Message Queue Pattern (Important!)
+
+**Never block the receive callback!** ESP-NOW callbacks run in interrupt context.
+
+### BAD (Blocks ESP-NOW)
 ```cpp
-mesh.maxPayload = 200;      // Max payload size (excluding 17-byte header)
-mesh.peerTimeout = 60000;   // Remove peer if silent for 60 seconds
-mesh.ackTimeout = 2000;     // Wait 2 seconds for ACK before retry
-mesh.maxRetries = 3;        // Retry failed unicasts up to 3 times
+void onMessage(const uint8_t *src_mac, const char *payload, size_t len) {
+    delay(1000);  // BREAKS MESH! Drops packets
+    readSensor();  // Blocks other messages
+}
 ```
 
-### Duplicate Detection
+### GOOD (Queue for Processing)
 ```cpp
-mesh.dupDetectBufferSize = 64;   // Remember 64 recent packets
-mesh.dupDetectWindowMs = 10000;  // Consider packets as duplicates for 10 seconds
+// See examples/queued_messages.ino for full implementation
+struct ReceivedMessage {
+    uint8_t src_mac[6];
+    char payload[200];
+    size_t len;
+};
+ReceivedMessage queue[10];
+
+void onMessage(...) {
+    // Just queue it, return fast
+    queue[writePos++] = {...};
+}
+
+void loop() {
+    processMessages();  // Handle slowly here
+}
 ```
 
-### HELLO Beacons
-```cpp
-mesh.helloInterval = 15000;  // Send HELLO every 15 seconds
-// For LEAF nodes (power saving):
-// mesh.helloInterval = 60000;  // Send HELLO every 60 seconds
-```
+**Use queue when handling requires:**
+- `delay()` calls
+- Sensor reads (DHT, ultrasonic, etc.)
+- Display updates (OLED, LCD)
+- Multiple `sendData()` replies
+- Complex processing
 
-### Pending Messages
-```cpp
-mesh.maxPendingMessages = 16;  // Track up to 16 messages awaiting ACK
-```
+See `examples/queued_messages.ino` for complete pattern.
 
 ## API Reference
 
-### Core Setup
+### Core Methods
+
 ```cpp
-void initWiFi();           // Initialize WiFi in STA mode
-void initEspNow();         // Initialize ESP-NOW protocol
-void registerCallbacks();  // Register send/receive callbacks
-void setChannel();         // Set WiFi channel for mesh
+// Setup (call in order)
+void initWiFi();
+void initEspNow();
+void setChannel();
+void registerCallbacks();
+void setMessageCallback(MessageCallback cb);
+
+// Loop maintenance (call regularly)
+void sendHelloBeacon();       // Send peer discovery beacon
+void checkPendingMessages();  // Handle ACK retries
+void prunePeers();            // Remove stale peers
+
+// Sending
+esp_err_t sendData(const char *msg, const uint8_t *dest_mac = nullptr, uint8_t msg_type = MSG_TYPE_DATA);
+esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
+esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
+
+// Peer management
+int findPeer(const uint8_t *mac);
+PeerInfo* getPeerTable();
+uint8_t* getNodeMac();
+
+// Role management
+void setRole(NodeRole r);
+NodeRole getRole() const;
+const char* getRoleName() const;
 ```
 
-### Loop Operations
+### Message Type Flags
+
 ```cpp
-void prunePeers();              // Remove inactive peers
-void sendHelloBeacon();         // Send periodic HELLO beacon
-void checkPendingMessages();    // Handle ACK timeouts and retries
+MSG_TYPE_DATA        // Regular data message (default)
+MSG_TYPE_HELLO       // Hello beacon (auto-handled)
+MSG_TYPE_ACK         // Acknowledgment (auto-handled)
+MSG_TYPE_NO_FORWARD  // Don't forward this packet
+MSG_TYPE_NO_ACK      // Don't send ACK (fire-and-forget)
+MSG_TYPE_TO_MASTER   // Route to MASTER nodes
+MSG_TYPE_TO_REPEATER // Route to REPEATER nodes
 ```
 
-### Communication
-```cpp
-// Send message (broadcast if dest_mac=nullptr)
-esp_err_t sendData(const char *msg, const uint8_t *dest_mac = nullptr, 
-                   uint8_t msg_type = MSG_TYPE_DATA);
+Combine with `|`: `MSG_TYPE_DATA | MSG_TYPE_NO_ACK`
 
-// Low-level send (advanced users)
-esp_err_t sendToMac(const uint8_t *mac, const uint8_t *data, size_t len);
-void forwardToPeersExcept(const uint8_t *exclude_mac, const uint8_t *data, size_t len);
+## Examples
+
+### Master-Leaf System
+```
+[MASTER] ←→ [REPEATER] ←→ [REPEATER] ←→ [LEAF]
+  (hub)      (router)      (router)    (sensor)
 ```
 
-### Node Role Management
-```cpp
-void setRole(NodeRole role);      // Set node role (MASTER/REPEATER/LEAF)
-NodeRole getRole() const;         // Get current role
-const char* getRoleName() const;  // Get role as string ("MASTER", "REPEATER", "LEAF")
-```
+**Master** (`examples/master.ino`):
+- Sends commands to leaf nodes
+- Receives sensor data
+- Forwards to cloud/server
 
-### Peer Management
-```cpp
-PeerInfo* getPeerTable();         // Access the peer table
-uint8_t* getNodeMac();            // Get this node's MAC address
-int findPeer(const uint8_t *mac); // Find peer by MAC
-void touchPeer(const uint8_t *mac); // Register/update peer
-```
+**Leaf** (`examples/node.ino`):
+- Reads sensors periodically
+- Sends data to master with `sendToMaster()`
+- Low power sleep possible (doesn't forward)
 
-### Utilities
+### Multi-Repeater Broadcast
 ```cpp
-String macToStr(const uint8_t *mac);  // Convert MAC address to "XX:XX:XX:XX:XX:XX"
+// On MASTER
+mesh.sendToRepeaters("CONFIG:interval=30");
+
+// All REPEATERs receive and forward to reach distant repeaters
 ```
 
 ## Packet Structure
 
-Each packet consists of a 17-byte header + payload:
-
-```
+```cpp
 struct packet_hdr_t {
-  uint8_t src_mac[6];      // Original sender MAC
-  uint8_t dest_mac[6];     // Destination MAC (0xFF... for broadcast)
-  uint16_t seq;            // Sequence number (duplicate detection)
-  uint8_t hop_count;       // Current hop count
-  uint8_t msg_type;        // Message type flags
-  uint8_t payload_len;     // Payload length
+    uint8_t src_mac[6];      // Original sender
+    uint8_t dest_mac[6];     // Destination (0xFF... = broadcast)
+    uint16_t seq;            // Sequence number (duplicate detection)
+    uint8_t hop_count;       // Current hops (incremented each forward)
+    uint8_t msg_type;        // Message type flags
+    uint8_t payload_len;     // Payload length (0-234 bytes)
 };
-// Total: 17 bytes header + up to 233 bytes payload = 250 bytes max (ESP-NOW limit)
+// Header: 17 bytes
+// Max total packet: 250 bytes (ESP-NOW limit)
+// Max payload: 234 bytes
 ```
-
-## Message Types
-
-Message types are flags that can be combined:
-
-| Flag | Value | Purpose |
-|------|-------|---------|
-| `MSG_TYPE_DATA` | 0x01 | Regular data message |
-| `MSG_TYPE_HELLO` | 0x02 | Hello beacon (peer discovery) |
-| `MSG_TYPE_ACK` | 0x04 | Acknowledgment |
-| `MSG_TYPE_NO_FORWARD` | 0x08 | Don't forward this packet |
-| `MSG_TYPE_NO_ACK` | 0x10 | Don't send ACK for this |
-
-**Example:**
-```cpp
-// Send a message that won't be forwarded and doesn't need ACK
-mesh.sendData("Control message", nullptr, 
-              ENowMesh::MSG_TYPE_NO_FORWARD | ENowMesh::MSG_TYPE_NO_ACK);
-```
-
-## Node Roles Explained
-
-### MASTER
-- Initiates messages
-- Forwards all packets
-- Never enters sleep mode
-- Full routing capability
-- Use for: Central hub, always-on gateway
-
-### REPEATER
-- Forwards all received messages
-- Full routing capability
-- Can send and receive
-- Use for: Intermediate routing nodes, WiFi extenders
-
-### LEAF
-- **Does NOT forward** packets (power-saving)
-- Can send and receive messages
-- Useful for battery-powered devices
-- Other nodes won't use it for routing
-
-## Recommended Configuration Examples
-
-### Small Mesh (3-5 nodes)
-```cpp
-mesh.maxHops = 3;
-mesh.helloInterval = 15000;
-mesh.dupDetectBufferSize = 32;
-mesh.dupDetectWindowMs = 5000;
-```
-
-### Medium Mesh (5-15 nodes)
-```cpp
-mesh.maxHops = 6;
-mesh.helloInterval = 20000;
-mesh.dupDetectBufferSize = 64;
-mesh.dupDetectWindowMs = 10000;
-```
-
-### Large Mesh (15+ nodes)
-```cpp
-mesh.maxHops = 10;
-mesh.helloInterval = 30000;
-mesh.dupDetectBufferSize = 128;
-mesh.dupDetectWindowMs = 15000;
-```
-
-### Low-Power Configuration (Battery Nodes)
-```cpp
-mesh.setRole(ENowMesh::ROLE_LEAF);    // Don't forward packets
-mesh.helloInterval = 60000;            // Send HELLO every minute
-mesh.maxPayload = 100;                 // Smaller messages
-mesh.peerTimeout = 300000;             // 5 minute peer timeout
-```
-
-## Examples
-
-The library includes several examples in the `examples/` folder:
-
-- **basic/**: Simple unicast and broadcast
-- **custom_configuration/**: Advanced parameter tuning
-- **master/**: Master node behavior
- - **multi_censor/**: Multiple sensor nodes reporting
-- **node/**: Simple repeater node
-- **unicast/**: Point-to-point communication
- - **queued_messages/**: Reliable unicast with ACK/retry (pending queue)
-
-## Queued Messages (Reliable Unicast with Retries)
-
-This example demonstrates how to send unicast messages that the library will track in a pending queue until an ACK is received or retries are exhausted. The mesh automatically tracks pending unicast messages when you call `sendData()` with a `dest_mac` and the `MSG_TYPE_NO_ACK` flag is not set. Call `checkPendingMessages()` regularly in `loop()` so the library can retry timed-out messages and clear completed entries.
-
-Sender example:
-
-```cpp
-#include "ENowMesh.h"
-
-ENowMesh mesh;
-// Replace with the destination node's MAC address
-uint8_t destMac[6] = { 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
-
-void setup() {
-  Serial.begin(115200);
-
-  // Tune reliability parameters BEFORE initWiFi()
-  mesh.ackTimeout = 2000;       // 2s wait for ACK before retry
-  mesh.maxRetries = 3;          // retry up to 3 times
-  mesh.maxPendingMessages = 8;  // how many messages to track simultaneously
-
-  mesh.setRole(ENowMesh::ROLE_REPEATER);
-  mesh.initWiFi();
-  mesh.setChannel();
-  mesh.initEspNow();
-  mesh.registerCallbacks();
-}
-
-void loop() {
-  // Send a reliable unicast; library will enqueue it for ACK tracking
-  esp_err_t r = mesh.sendData("Important command", destMac);
-  if (r != ESP_OK) Serial.printf("sendData failed: %d\n", (int)r);
-
-  // Must call regularly so pending messages are retried / timed out
-  mesh.checkPendingMessages();
-
-  // Keep peer table and other housekeeping running
-  mesh.prunePeers();
-  mesh.sendHelloBeacon();
-
-  delay(1000);
-}
-```
-
-Receiver notes:
-- The library will automatically generate and send ACK packets for unicast messages (unless `MSG_TYPE_NO_ACK` is set).
-- ACK handling and clearing of pending entries is done internally; you can monitor Serial logs (OnDataSent / OnDataRecv) to observe ACKs and retries.
-
-Tuning hints:
-- Increase `ackTimeout` for deeper/wider meshes (formula: `(maxHops * 500ms) + 500ms`).
-- Increase `maxRetries` for unstable links or critical messages.
-- Ensure `mesh.maxPendingMessages` is large enough for your expected concurrent unicast burst.
-
-## Compile-Time Constants
-
-These constants define static array sizes and cannot be changed at runtime:
-
-```cpp
-static constexpr size_t PEER_TABLE_SIZE = 128;         // ~2KB RAM
-static constexpr size_t DUP_DETECT_BUFFER_SIZE = 128;  // ~1.4KB RAM
-static constexpr size_t MAX_PENDING_MESSAGES = 32;     // ~6.9KB RAM
-```
-
-To modify these limits, edit `ENowMesh.h` and recompile.
 
 ## Troubleshooting
 
-### Nodes Not Discovering Each Other
-- Verify all nodes are on the **same WiFi channel**: `mesh.channel`
-- Check that `sendHelloBeacon()` is called regularly in `loop()`
-- Look for "HELLO RECEIVED" messages in Serial output
+### Messages Not Being Received
+1. **Check WiFi channel** - All nodes must use same channel
+2. **Check range** - ESP-NOW range is ~50-200m (walls reduce it)
+3. **Check `maxHops`** - Increase if nodes are far apart
+4. **Enable debug** - Watch Serial output for packet flow
 
-### Messages Not Being Forwarded
-- Verify node roles: use `mesh.getRoleName()` in Serial output
-- LEAF nodes don't forward—use REPEATER or MASTER for intermediate nodes
-- Check `maxHops` isn't too low
-- Verify `MSG_TYPE_NO_FORWARD` flag isn't set unintentionally
+### High Packet Loss
+1. **Reduce broadcast frequency** - Too many broadcasts flood the mesh
+2. **Increase `dupDetectWindowMs`** - Packets arriving late get dropped
+3. **Check peer table** - May be full (`PEER_TABLE_SIZE = 128`)
+4. **Reduce `maxPayload`** - Smaller packets = more reliable
 
-### ACK Timeouts/Retries
-- Check `ackTimeout` is long enough for mesh depth: `(maxHops × 500ms) + 500ms`
-- Monitor Serial for "Send FAILED" messages
-- Increase `maxRetries` if nodes are unstable
-- Check that destination node is reachable
+### ACK Timeouts
+1. **Increase `ackTimeout`** - Formula: `(maxHops × 500) + 500ms`
+2. **Check route** - Use Serial debug to see hop count
+3. **Check LEAF nodes** - LEAFs don't forward, may block routes
 
-### High Duplicate Detection False Positives
-- Increase `dupDetectWindowMs` if mesh is large
-- Formula: `(maxHops × 1000ms) + 3000ms`
-
-## Serial Debug Output
-
-Enable Serial for detailed mesh activity:
-
-```
-[HELLO BEACON] Sent to all peers: HELLO:REPEATER
-[MESH SEND] To AA:BB:CC:DD:EE:FF | type=DATA | len=13 | msg='Hello world' | result=0
-[RECV] type=DATA | from=AA:BB:CC:DD:EE:FF | seq=12345 | hop=1
-[MESH BROADCAST] type=DATA | len=20 | msg='Broadcast message'
-Flooded broadcast packet (src AA:BB:CC:DD:EE:FF) hop->2
+### Memory Issues
+```cpp
+// Reduce static buffers in ENowMesh.h
+static constexpr size_t PEER_TABLE_SIZE = 64;  // Was 128
+static constexpr size_t DUP_DETECT_BUFFER_SIZE = 64;  // Was 128
+static constexpr size_t MAX_PENDING_MESSAGES = 16;  // Was 32
 ```
 
-## Performance Notes
+### Duplicate Packets
+- Normal in mesh networks! Handled automatically.
+- If seeing "DUPLICATE" in logs, it's working correctly.
+- Increase `dupDetectWindowMs` if seeing false duplicates.
 
-- ESP-NOW range: ~250 meters line-of-sight
-- Latency per hop: ~50-200ms
-- Maximum theoretical throughput: ~30-50 messages/second (depends on payload size)
-- Mesh stability improves with 50-100ms loop delay
-- Consider mesh density: too many nodes = more collisions
+## Performance Characteristics
+
+| Metric | Value |
+|--------|-------|
+| Latency (per hop) | 50-200ms typical |
+| Range (outdoor) | 100-250m |
+| Range (indoor) | 30-100m (walls reduce) |
+| Max payload | 234 bytes |
+| Max packet size | 250 bytes |
+| Throughput | ~10-50 packets/sec per node |
+| Power (TX) | ~120mA @ 3.3V |
+| Power (RX) | ~80mA @ 3.3V |
+
+## Best Practices
+
+1. **Call maintenance functions regularly** in `loop()`:
+   ```cpp
+   mesh.sendHelloBeacon();
+   mesh.checkPendingMessages();
+   mesh.prunePeers();
+   ```
+
+2. **Keep callbacks fast** - Queue messages for slow processing
+
+3. **Set appropriate `maxHops`** - Balance latency vs. coverage
+
+4. **Use unicast for important data** - Gets ACK/retry
+
+5. **Use broadcast for sensor readings** - No ACK overhead
+
+6. **Test range before deployment** - ESP-NOW range varies by environment
+
+7. **Monitor Serial output** - Shows packet flow and issues
 
 ## License
 
-[Add your license information here]
+MIT License - See LICENSE file
 
-## Support
+## Contributing
 
-For issues, feature requests, or questions, please refer to the examples or contact the library maintainer.
+Pull requests welcome! Please include examples demonstrating new features.
 
-## Changelog
+## Credits
 
-### v1.0.0
-- Initial release
-- Multi-hop mesh networking
-- Three node roles (MASTER, REPEATER, LEAF)
-- ACK/retry mechanism
-- Duplicate detection
-- HELLO beacon discovery
+Built on Espressif's ESP-NOW protocol.
