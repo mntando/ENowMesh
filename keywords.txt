@@ -1,0 +1,11 @@
+# Classes (KEYWORD1 - orange)
+ENowMesh	KEYWORD1
+
+# Methods/Functions (KEYWORD2 - orange-brown)
+sendData	KEYWORD2
+initWiFi	KEYWORD2
+setRole	KEYWORD2
+
+# Constants (LITERAL1 - blue)
+ROLE_MASTER	LITERAL1
+MSG_TYPE_DATA	LITERAL1

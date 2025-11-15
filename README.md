@@ -100,6 +100,19 @@ mesh.setRole(ENowMesh::ROLE_LEAF);
 - **REPEATER**: Forwards all messages, processes `sendToRepeaters()`
 - **LEAF**: Never forwards (saves power/bandwidth)
 
+**Runtime Role Changes:**
+Node roles can be changed at runtime using `setRole()`:
+```cpp
+// Receive command to change role
+if (strcmp(payload, "CMD:PROMOTE_MASTER") == 0) {
+    mesh.setRole(ENowMesh::ROLE_MASTER);
+    mesh.sendHelloBeacon();  // Announce new role immediately
+}
+```
+**NOTE:**  
+**Safe transitions:** REPEATER ↔ MASTER (both are routers)  
+**Avoid:** MASTER/REPEATER → LEAF (breaks mesh routing, may partition network)
+
 ## Sending Messages
 
 ### 1. Broadcast to Everyone
@@ -337,7 +350,7 @@ static constexpr size_t MAX_PENDING_MESSAGES = 16;  // Was 32
 - If seeing "DUPLICATE" in logs, it's working correctly.
 - Increase `dupDetectWindowMs` if seeing false duplicates.
 
-## Performance Characteristics
+## Performance Characteristics ***(theoretical)***
 
 | Metric | Value |
 |--------|-------|
@@ -370,6 +383,42 @@ static constexpr size_t MAX_PENDING_MESSAGES = 16;  // Was 32
 6. **Test range before deployment** - ESP-NOW range varies by environment
 
 7. **Monitor Serial output** - Shows packet flow and issues
+
+## Potential Improvements
+
+### Routing Tables
+Currently uses **flood routing** - packets broadcast to all peers when destination unknown. This works reliably but consumes bandwidth.
+
+**Planned improvement:**
+- Maintain routing table mapping destination MACs to next-hop neighbors
+- Learn routes from packet headers (source routing)
+- Fallback to flooding when route unknown
+- **Benefit:** Reduced broadcasts, lower latency, better scalability for large meshes (20+ nodes)
+
+**Tradeoff:** ~1-2KB additional RAM for routing table storage
+
+### Encryption
+ESP-NOW supports AES-128 encryption, but ENowMesh currently uses **unencrypted mode** for simplicity and compatibility.
+
+**Planned improvement:**
+- Optional encrypted peer pairing
+- Pre-shared key (PSK) mode for entire mesh
+- Per-message encryption with shared mesh key
+
+**Implementation considerations:**
+- Encrypted mode limits peer count (10 encrypted vs 20 unencrypted on ESP32)
+- Key distribution mechanism needed for dynamic peers
+- Performance impact: ~5-10ms encryption overhead per packet
+
+**Workaround for now:** Implement application-layer encryption in your payload before calling `sendData()`.
+
+### Other Potential Features
+- **Mesh health metrics** - Track packet loss, hop counts, peer stability
+- **Quality of Service (QoS)** - Priority queues for critical messages
+- **Sleep coordination** - Wake-on-demand for low-power LEAF nodes
+- **Bridge mode** - Gateway between ESP-NOW mesh and WiFi/MQTT
+
+Contributions welcome! Open an issue to discuss implementation.
 
 ## License
 
