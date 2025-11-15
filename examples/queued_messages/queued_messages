@@ -31,7 +31,7 @@ ENowMesh mesh;
 // MESSAGE QUEUE STRUCTURE
 // ========================================
 struct ReceivedMessage {
-  uint8_t src_mac[6];     // Who sent it
+  uint8_t src_mac[6];      // Who sent it
   char payload[200];       // Message content
   size_t len;              // Payload length
 };
@@ -105,7 +105,7 @@ void processMessages() {
     }
     
     else if (strcmp(msg.payload, "READ_TEMP") == 0) {
-      Serial.println("🌡️  Reading temperature...");
+      Serial.println("Reading temperature...");
       
       // Simulate slow sensor read (replace with real sensor)
       delay(250);  // Safe here!
@@ -164,7 +164,6 @@ void setup() {
   
   // Setup mesh
   mesh.setRole(ENowMesh::ROLE_REPEATER);  // or ROLE_LEAF if you don't want to forward
-  Serial.printf("Role: %s\n", mesh.getRoleName());
   
   mesh.initWiFi();
   mesh.setChannel();

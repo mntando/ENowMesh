@@ -1,18 +1,16 @@
 #include "ENowMesh.h"
-
 ENowMesh mesh;
 
-// Master node MAC address (replace with your master's MAC)
-uint8_t masterMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
+// Optional: Specific MAC if you want direct unicast (comment out if using sendData)
+// uint8_t nodeMAC[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
 
 const int LED_PIN = 2;  // Built-in LED
 const int SENSOR_PIN = 34;  // Analog sensor input
 
 // Callback when message arrives from mesh
 void onMessage(const uint8_t *src_mac, const char *payload, size_t len) {
-  Serial.printf("Command from %02X:%02X:%02X:%02X:%02X:%02X: %s\n",
-                src_mac[0], src_mac[1], src_mac[2], src_mac[3], 
-                src_mac[4], src_mac[5], payload);
+  Serial.printf("Command from %02X:%02X:%02X:%02X:%02X:%02X: %s\n", 
+                src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5], payload);
   
   // Act on commands
   if (strcmp(payload, "CMD:LED_ON") == 0) {
@@ -35,7 +33,12 @@ void sendStatus() {
   snprintf(msg, sizeof(msg), "STATUS:sensor=%d,led=%d", 
            sensorValue, digitalRead(LED_PIN));
   
-  mesh.sendData(msg, masterMAC);
+  // Option 1: Send to any MASTER node (automatic routing)
+  mesh.sendToMaster(msg);
+  
+  // Option 2: Send directly to specific MAC (uncomment if needed)
+  // mesh.sendData(msg, nodeMAC);
+  
   Serial.printf("Sent status to master: %s\n", msg);
 }
 
