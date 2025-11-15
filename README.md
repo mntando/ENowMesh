@@ -36,12 +36,6 @@ A lightweight, self-organizing mesh network library using Espressif's ESP-NOW pr
 2. Sketch → Include Library → Add .ZIP Library
 3. Select the downloaded ZIP file
 
-### PlatformIO
-```ini
-lib_deps = 
-    https://github.com/yourusername/ENowMesh.git
-```
-
 ## Quick Start
 
 ### Basic Node (10 Lines)
