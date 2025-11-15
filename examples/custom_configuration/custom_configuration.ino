@@ -20,7 +20,10 @@ void setup() {
 }
 
 void loop() {
-  mesh.prunePeers();
-  mesh.checkPendingMessages();
-  delay(100);
+	// Mesh maintenance
+	mesh.sendHelloBeacon();
+	mesh.checkPendingMessages();
+	mesh.prunePeers();
+  
+	delay(100);
 }

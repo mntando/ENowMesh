@@ -16,6 +16,8 @@ class ENowMesh {
         static constexpr uint8_t MSG_TYPE_ACK        = 0x04;  // Acknowledgment
         static constexpr uint8_t MSG_TYPE_NO_FORWARD = 0x08;  // Don't forward this packet
         static constexpr uint8_t MSG_TYPE_NO_ACK     = 0x10;  // Don't send ACK for this
+        static constexpr uint8_t MSG_TYPE_TO_MASTER  = 0x20;  // Route to MASTER node
+        static constexpr uint8_t MSG_TYPE_TO_REPEATER = 0x40; // Route to REPEATER node
 
         // ========================================
         // CONFIGURABLE MESH PARAMETERS
@@ -122,6 +124,10 @@ class ENowMesh {
         // Send message to specific node (unicast) or all nodes (broadcast if dest_mac=nullptr)
         // Returns: ESP_OK on success, error code otherwise
 
+        // Helper to send message to MASTER node
+        esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
+        esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
+
         // ========================================
         // PACKET STRUCTURE
         // ========================================
@@ -163,7 +169,10 @@ class ENowMesh {
         static void OnDataSent(const esp_now_send_info_t *info, esp_now_send_status_t status);
         static void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len);
 
-        // On Message receive user callback (External Use)
+        // ========================================
+        // USER CALLBACK
+        // ========================================
+        // Called when a message destined for this node is received
         typedef void (*MessageCallback)(const uint8_t *src_mac, const char *payload, size_t len);
         void setMessageCallback(MessageCallback cb);
 
@@ -191,7 +200,7 @@ class ENowMesh {
             bool waiting;
         };
 
-        // Message receive user callback
+        // User message callback
         MessageCallback userCallback = nullptr;
 
         // ========================================

@@ -92,6 +92,8 @@ const char* ENowMesh::msgTypeToStr(uint8_t msg_type) {
     if (msg_type & MSG_TYPE_ACK) strcat(buf, "ACK|");
     if (msg_type & MSG_TYPE_NO_FORWARD) strcat(buf, "NO_FWD|");
     if (msg_type & MSG_TYPE_NO_ACK) strcat(buf, "NO_ACK|");
+    if (msg_type & MSG_TYPE_TO_MASTER) strcat(buf, "TO_MASTER|");
+    if (msg_type & MSG_TYPE_TO_REPEATER) strcat(buf, "TO_REPEATER|");
     
     // Remove trailing '|'
     size_t len = strlen(buf);
@@ -314,6 +316,16 @@ esp_err_t ENowMesh::sendData(const char *msg, const uint8_t *dest_mac, uint8_t m
     return result;
 }
 
+// Send message to a MASTER node
+esp_err_t ENowMesh::sendToMaster(const char *msg, uint8_t msg_type) {
+    return sendData(msg, nullptr, msg_type | MSG_TYPE_TO_MASTER);
+}
+
+// Send message to all REPEATER nodes
+esp_err_t ENowMesh::sendToRepeaters(const char *msg, uint8_t msg_type) {
+    return sendData(msg, nullptr, msg_type | MSG_TYPE_TO_REPEATER);
+}
+
 
 // =======================================
 // ===== STATIC CALLBACK IMPLEMENTATION ===
@@ -384,9 +396,7 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
 
     m->touchPeer(mac_addr);
 
-    Serial.printf("[RECV] type=%s | from=%s | seq=%u | hop=%u\n", 
-                 m->msgTypeToStr(hdr.msg_type), m->macToStr(hdr.src_mac).c_str(), 
-                 (unsigned)hdr.seq, (unsigned)hdr.hop_count);
+    Serial.printf("[RECV] type=%s | from=%s | seq=%u | hop=%u\n", m->msgTypeToStr(hdr.msg_type), m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq, (unsigned)hdr.hop_count);
 
     // === HANDLE HELLO BEACONS ===
     if (hdr.msg_type & MSG_TYPE_HELLO) {
@@ -399,11 +409,50 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
         return;  // HELLO consumed
     }
 
+    // === ROLE-BASED DELIVERY FILTER ===
+    bool isRoleFiltered = false;
+    bool shouldForward = false;
+
+    if (hdr.msg_type & (MSG_TYPE_TO_MASTER | MSG_TYPE_TO_REPEATER)) {
+        // Handle MSG_TYPE_TO_MASTER (anycast - first master processes and drops)
+        if (hdr.msg_type & MSG_TYPE_TO_MASTER) {
+            if (m->getRole() == ROLE_MASTER) {
+                Serial.println("[ROLE FILTER] Packet for MASTER - I am master, processing");
+                // shouldForward stays false - master consumes the packet
+            } else {
+                isRoleFiltered = true;  // Don't process, just forward
+                Serial.println("[ROLE FILTER] Packet for MASTER - forwarding only");
+            }
+        }
+        
+        // Handle MSG_TYPE_TO_REPEATER (multicast - all repeaters process and forward)
+        if (hdr.msg_type & MSG_TYPE_TO_REPEATER) {
+            if (m->getRole() == ROLE_REPEATER) {
+                shouldForward = true;  // Forward to reach other repeaters
+                isRoleFiltered = false;  // Explicitly allow processing
+                Serial.println("[ROLE FILTER] Packet for REPEATER - I am repeater, processing and forwarding");
+            } else {
+                isRoleFiltered = true;  // Don't process, just forward
+                Serial.println("[ROLE FILTER] Packet for REPEATER - forwarding only");
+            }
+        }
+    }
+
     // === PACKET FOR THIS NODE ===
-    if (memcmp(hdr.dest_mac, myMacStatic, 6) == 0) {
-        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", 
-                     m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), 
-                     m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
+    // Only process if:
+    // 1. Addressed to me specifically (unicast), OR
+    // 2. Broadcast AND (not role-filtered OR I match the role filter)
+    bool isUnicastForMe = (memcmp(hdr.dest_mac, myMacStatic, 6) == 0);
+    bool isBroadcast = true;
+    for (int i = 0; i < 6; i++) {
+        if (hdr.dest_mac[i] != 0xFF) {
+            isBroadcast = false;
+            break;
+        }
+    }
+    
+    if (isUnicastForMe || (isBroadcast && !isRoleFiltered)) {
+        Serial.printf("[%s] Packet for me (seq=%u) from immediate=%s original_src=%s hop_count=%u payload_len=%u\n", m->getRoleName(), (unsigned)hdr.seq, m->macToStr(mac_addr).c_str(), m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.hop_count, (unsigned)hdr.payload_len);
 
         if (hdr.payload_len > 0) {
             const uint8_t *pl = incomingData + sizeof(packet_hdr_t);
@@ -433,14 +482,14 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
                 return;  // ACK consumed
             }
 
-            // Print payload
+            // Print payload and call user callback
             char *tmp = (char*)malloc(hdr.payload_len + 1);
             if (tmp) {
                 memcpy(tmp, pl, hdr.payload_len);
                 tmp[hdr.payload_len] = '\0';
                 Serial.printf("Payload: %s\n", tmp);
 
-                // Call user callback if registered
+                // Call user callback if set
                 if (m->userCallback) {
                     m->userCallback(hdr.src_mac, tmp, hdr.payload_len);
                 }
@@ -453,17 +502,14 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
         if (!(hdr.msg_type & MSG_TYPE_NO_ACK)) {
             char ackPayload[8];
             snprintf(ackPayload, sizeof(ackPayload), "%u", hdr.seq);
-            
-            // Use sendData with MSG_TYPE_ACK flag (ACKs don't need their own ACKs)
             m->sendData(ackPayload, hdr.src_mac, MSG_TYPE_ACK | MSG_TYPE_NO_ACK);
             Serial.printf("ACK sent to %s for seq=%u\n", m->macToStr(hdr.src_mac).c_str(), (unsigned)hdr.seq);
         }
         
-        return;  // Packet consumed - don't forward it
+        if (!shouldForward) return;  // Packet consumed - don't forward it
     }
 
-    // === FORWARDING LOGIC ===
-    
+    // === FORWARDING LOGIC ===    
     // Check if packet should not be forwarded
     if (hdr.msg_type & MSG_TYPE_NO_FORWARD) {
         Serial.println("Packet has NO_FORWARD flag - not forwarding.");
@@ -495,15 +541,6 @@ void ENowMesh::OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomi
         Serial.println("Role is LEAF – not forwarding packet.");
         free(fwdBuf);
         return;
-    }
-
-    // Check if broadcast
-    bool isBroadcast = true;
-    for (int i = 0; i < 6; i++) {
-        if (hdr.dest_mac[i] != 0xFF) {
-            isBroadcast = false;
-            break;
-        }
     }
 
     if (isBroadcast) {
