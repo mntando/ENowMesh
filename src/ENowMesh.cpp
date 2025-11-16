@@ -326,6 +326,15 @@ esp_err_t ENowMesh::sendToRepeaters(const char *msg, uint8_t msg_type) {
     return sendData(msg, nullptr, msg_type | MSG_TYPE_TO_REPEATER);
 }
 
+// Send message directly (no mesh forwarding)
+esp_err_t ENowMesh::sendDirect(const char *msg, const uint8_t *dest_mac, uint8_t msg_type) {
+    if (!dest_mac) {
+        Serial.println("ERROR: sendDirect requires destination MAC address");
+        return ESP_ERR_INVALID_ARG;
+    }
+    return sendData(msg, dest_mac, msg_type | MSG_TYPE_NO_FORWARD);
+}
+
 
 // =======================================
 // ===== STATIC CALLBACK IMPLEMENTATION ===

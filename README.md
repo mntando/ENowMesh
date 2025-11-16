@@ -8,8 +8,8 @@ A lightweight, self-organizing mesh network library using Espressif's ESP-NOW pr
 
 - **Self-Organizing Mesh** - Nodes automatically discover peers and route messages through multiple hops
 - **Three Node Roles** - MASTER (hub), REPEATER (router), LEAF (end device)
-- **Reliable Delivery** - Automatic ACK/retry mechanism for unicast messages
-- **Smart Routing** - Direct unicast when possible, intelligent flooding fallback
+- **Delivery** - Automatic ACK/retry mechanism for unicast messages
+- **Routing** - Direct unicast when possible, flooding fallback
 - **Role-Based Routing** - Send messages specifically to MASTER or REPEATER nodes
 - **Duplicate Detection** - Prevents message loops in the mesh
 - **Configurable** - Tune hop limits, timeouts, retries, and more
@@ -142,7 +142,15 @@ mesh.sendData("Private message", targetMAC);
 // Automatic ACK/retry, routed through mesh if needed
 ```
 
-### 5. Custom Message Types
+### 5. Direct Send (No Mesh Forwarding)
+```cpp
+uint8_t neighborMAC[] = {0x24, 0x6F, 0x28, 0xAB, 0xCD, 0xEF};
+mesh.sendDirect("1-hop only", neighborMAC);
+// Recipient won't forward - fails if not direct neighbor
+// Use for neighbor-to-neighbor communication
+```
+
+### 6. Custom Message Types
 ```cpp
 // No ACK required (fire-and-forget)
 mesh.sendData("Sensor reading", nullptr, ENowMesh::MSG_TYPE_DATA | ENowMesh::MSG_TYPE_NO_ACK);

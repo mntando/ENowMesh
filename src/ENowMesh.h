@@ -125,8 +125,10 @@ class ENowMesh {
         // Returns: ESP_OK on success, error code otherwise
 
         // Helper to send message to nodes
-        esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);      // Msg will be received by all masters
-        esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);   // Msg will be received by all repeaters
+        esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);                          // Msg will be received by all masters
+        esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);                       // Msg will be received by all repeaters
+        esp_err_t sendDirect(const char *msg, const uint8_t *dest_mac, uint8_t msg_type = MSG_TYPE_DATA);   // Direct send - no mesh forwarding (1-hop only)
+
 
         // ========================================
         // PACKET STRUCTURE
