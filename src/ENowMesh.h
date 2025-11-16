@@ -124,9 +124,9 @@ class ENowMesh {
         // Send message to specific node (unicast) or all nodes (broadcast if dest_mac=nullptr)
         // Returns: ESP_OK on success, error code otherwise
 
-        // Helper to send message to MASTER node
-        esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
-        esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);
+        // Helper to send message to nodes
+        esp_err_t sendToMaster(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);      // Msg will be received by all masters
+        esp_err_t sendToRepeaters(const char *msg, uint8_t msg_type = MSG_TYPE_DATA);   // Msg will be received by all repeaters
 
         // ========================================
         // PACKET STRUCTURE

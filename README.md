@@ -103,9 +103,14 @@ if (strcmp(payload, "CMD:PROMOTE_MASTER") == 0) {
     mesh.sendHelloBeacon();  // Announce new role immediately
 }
 ```
-**NOTE:**  
-**Safe transitions:** REPEATER ↔ MASTER (both are routers)  
-**Avoid:** MASTER/REPEATER → LEAF (breaks mesh routing, may partition network)
+**NOTE:**
+
+**Safe transitions:**
+- REPEATER ↔ MASTER (both forward packets)
+- LEAF → MASTER/REPEATER (adding routing capability)
+
+**Avoid:** 
+- MASTER/REPEATER → LEAF (stops forwarding, may partition network)
 
 ## Sending Messages
 
@@ -117,13 +122,17 @@ mesh.sendData("Hello everyone!");
 ### 2. Send to Any MASTER Node (Anycast)
 ```cpp
 mesh.sendToMaster("Data for master");
-// First MASTER in path processes it, packet dropped after
+// ============================================================
+// WARNING: ALL MASTER nodes receive and process this message
+// Your cloud API MUST deduplicate using sequence numbers
+// ============================================================
 ```
 
 ### 3. Send to All REPEATER Nodes (Multicast)
 ```cpp
 mesh.sendToRepeaters("Update all routers");
-// Every REPEATER processes AND forwards it
+// Every REPEATER processes AND forwards to reach other repeaters
+// Non-REPEATER nodes forward only (don't process)
 ```
 
 ### 4. Unicast to Specific MAC
@@ -382,6 +391,8 @@ static constexpr size_t MAX_PENDING_MESSAGES = 16;  // Was 32
 
 ### Routing Tables
 Currently uses **flood routing** - packets broadcast to all peers when destination unknown. This works reliably but consumes bandwidth.
+
+**Status:** Planned for v2.0
 
 **Planned improvement:**
 - Maintain routing table mapping destination MACs to next-hop neighbors
