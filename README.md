@@ -340,7 +340,7 @@ struct packet_hdr_t {
 ### High Packet Loss
 1. **Reduce broadcast frequency** - Too many broadcasts flood the mesh
 2. **Increase `dupDetectWindowMs`** - Packets arriving late get dropped
-3. **Check peer table** - May be full (`PEER_TABLE_SIZE = 128`)
+3. **Check peer table** - May be full (`PEER_TABLE_SIZE = 24`)
 4. **Reduce `maxPayload`** - Smaller packets = more reliable
 
 ### ACK Timeouts
@@ -351,7 +351,6 @@ struct packet_hdr_t {
 ### Memory Issues
 ```cpp
 // Reduce static buffers in ENowMesh.h
-static constexpr size_t PEER_TABLE_SIZE = 64;  // Was 128
 static constexpr size_t DUP_DETECT_BUFFER_SIZE = 64;  // Was 128
 static constexpr size_t MAX_PENDING_MESSAGES = 16;  // Was 32
 ```

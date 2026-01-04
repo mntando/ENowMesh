@@ -31,7 +31,7 @@ class ENowMesh {
         // Maximum forwarding hops before packet is dropped
         // Recommended: Small mesh (3-5 nodes): 3-4 hops, Medium mesh (5-15 nodes): 5-6 hops, Large mesh (15+ nodes): 7-10 hops, each hop adds ~50-200ms latency
         
-        uint16_t maxPeers = 128;  
+        uint16_t maxPeers = 24;  
         // Maximum active peers to track (compile-time fixed, see PEER_TABLE_SIZE)
         // Recommended: Set to expected node count + 20% buffer
         
@@ -77,7 +77,7 @@ class ENowMesh {
         // These define static array sizes and cannot be changed at runtime
         // Modify these if you need different limits, then recompile
         
-        static constexpr size_t PEER_TABLE_SIZE = 128;
+        static constexpr size_t PEER_TABLE_SIZE = 24;
         // Static peer table size - increases RAM usage (16 bytes per peer)
         // 128 peers = ~2KB RAM
         
